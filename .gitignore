@@ -1,0 +1,25 @@
+# Maven
+target/
+*.class
+*.jar
+*.war
+
+# H2 database files (runtime data)
+data/
+*.mv.db
+*.trace.db
+
+# IDE
+.idea/
+*.iml
+*.ipr
+*.iws
+.vscode/
+*.DS_Store
+
+# Logs
+*.log
+logs/
+
+# OS
+Thumbs.db
