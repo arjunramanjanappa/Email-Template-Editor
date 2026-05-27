@@ -14,17 +14,19 @@ let isFullscreen = false;
 let htmlSourceDirty = false;   // true when user edits HTML source textarea
 let draggingParam = null;      // param name currently being dragged from params panel
 let hoveredComponent = null;   // last GrapesJS component hovered over in canvas
+let pendingParamInsert = null; // { paramName, comp } awaiting optional/mandatory choice
 
 // Bootstrap modal references
-let addParamModal, importJsonModal, importHtmlModal, previewModal, findReplaceModal;
+let addParamModal, importJsonModal, importHtmlModal, previewModal, findReplaceModal, paramInsertModal;
 
 // ─── Init ──────────────────────────────────────────────────────────────
 document.addEventListener('DOMContentLoaded', async () => {
-    addParamModal   = new bootstrap.Modal(document.getElementById('addParamModal'));
-    importJsonModal = new bootstrap.Modal(document.getElementById('importJsonModal'));
-    importHtmlModal = new bootstrap.Modal(document.getElementById('importHtmlModal'));
-    previewModal    = new bootstrap.Modal(document.getElementById('previewModal'));
+    addParamModal    = new bootstrap.Modal(document.getElementById('addParamModal'));
+    importJsonModal  = new bootstrap.Modal(document.getElementById('importJsonModal'));
+    importHtmlModal  = new bootstrap.Modal(document.getElementById('importHtmlModal'));
+    previewModal     = new bootstrap.Modal(document.getElementById('previewModal'));
     findReplaceModal = new bootstrap.Modal(document.getElementById('findReplaceModal'));
+    paramInsertModal = new bootstrap.Modal(document.getElementById('paramInsertModal'));
 
     currentTemplateId = new URLSearchParams(window.location.search).get('id');
     if (currentTemplateId) currentTemplateId = parseInt(currentTemplateId);
@@ -308,7 +310,118 @@ function setEditorContent(html) {
 function getFullHtml() {
     const body = gje.getHtml();
     const css  = gje.getCss();
-    return `<!DOCTYPE html>\n<html lang="en">\n<head>\n  <meta charset="UTF-8">\n  <meta name="viewport" content="width=device-width,initial-scale=1">\n  <title>\${emailSubject!''}</title>\n  <style>\n${css}\n  </style>\n</head>\n<body>\n${body}\n</body>\n</html>`;
+    const ftl  = convertBodyToFtl(body);   // resolve placeholders + optional-row wrapping
+    return `<!DOCTYPE html>\n<html lang="en">\n<head>\n  <meta charset="UTF-8">\n  <meta name="viewport" content="width=device-width,initial-scale=1">\n  <title>\${emailSubject!''}</title>\n  <style>\n${css}\n  </style>\n</head>\n<body>\n${ftl}\n</body>\n</html>`;
+}
+
+// ─── Design → FTL Conversion ──────────────────────────────────────────
+//
+// Transforms the raw GrapesJS HTML body into export-ready FTL:
+//
+//  1. JSON design placeholders  <span data-json-ph="X">{X}</span>
+//     → ${X}  (FTL variable expression)
+//
+//  2. Optional table rows  <tr data-ftl-optional="X">…</tr>
+//     → <#if X??>\n<tr>…</tr>\n</#if>
+//     so that FreeMarker hides the row when X is null/missing.
+//
+function convertBodyToFtl(rawHtml) {
+    // --- Step 1: replace JSON placeholder spans with FTL expressions ---
+    // Use DOMParser so we can do a clean attribute-based query & replace.
+    const parser = new DOMParser();
+    const doc = parser.parseFromString(`<html><body>${rawHtml}</body></html>`, 'text/html');
+
+    doc.querySelectorAll('span[data-json-ph]').forEach(span => {
+        const p = span.getAttribute('data-json-ph');
+        // createTextNode avoids HTML encoding of ${} in the output
+        span.parentNode.replaceChild(doc.createTextNode(`\${${p}}`), span);
+    });
+
+    let html = doc.body.innerHTML;
+
+    // --- Step 2: wrap optional rows with <#if param??> … </#if> ---
+    return wrapOptionalTableRows(html);
+}
+
+// String-level pass that wraps every <tr data-ftl-optional="X"> block.
+// Handles nested tables by counting <tr>/</ tr> depth.
+function wrapOptionalTableRows(html) {
+    const out = [];
+    let cursor = 0;
+
+    while (cursor < html.length) {
+        // Find the next <tr> that carries a data-ftl-optional attribute
+        const trIdx = findNextOptionalTr(html, cursor);
+        if (trIdx === -1) { out.push(html.slice(cursor)); break; }
+
+        // Extract the full opening tag  <tr ...data-ftl-optional="X"...>
+        const tagClose = html.indexOf('>', trIdx);
+        if (tagClose === -1) { out.push(html.slice(cursor)); break; }
+        const fullOpenTag = html.slice(trIdx, tagClose + 1);
+        const optMatch    = /\bdata-ftl-optional="([^"]+)"/.exec(fullOpenTag);
+        if (!optMatch) { cursor = tagClose + 1; continue; }
+
+        const paramName  = optMatch[1];
+        const cleanAttrs = fullOpenTag
+            .replace(/\s*\bdata-ftl-optional="[^"]+"/, '')  // strip attribute
+            .replace(/^<tr\s*>$/, '<tr>')                   // tidy up '<tr >'
+            .trim();                                         // cleanAttrs = '<tr …>' or '<tr>'
+
+        const contentStart = tagClose + 1;
+
+        // Walk forward counting <tr> depth to find the MATCHING </tr>
+        let depth = 1, pos = contentStart, closingAt = -1;
+        while (pos < html.length && depth > 0) {
+            const nextOpen  = html.indexOf('<tr', pos);
+            const nextClose = html.indexOf('</tr>', pos);
+            if (nextClose === -1) break;  // malformed HTML
+
+            if (nextOpen !== -1 && nextOpen < nextClose) {
+                // Confirm it's really a <tr> tag (not <track>, etc.)
+                const ch = html[nextOpen + 3] || '';
+                if (ch === '>' || ch === ' ' || ch === '\t' || ch === '\n' || ch === '\r') {
+                    depth++;
+                    pos = nextOpen + 4;
+                } else {
+                    pos = nextOpen + 4;
+                }
+            } else {
+                depth--;
+                if (depth === 0) closingAt = nextClose;
+                pos = nextClose + 5;
+            }
+        }
+
+        // Emit everything before this optional row unchanged
+        out.push(html.slice(cursor, trIdx));
+
+        if (closingAt !== -1) {
+            const innerContent = html.slice(contentStart, closingAt);
+            out.push(`<#if ${paramName}??>\n${cleanAttrs}${innerContent}</tr>\n</#if>`);
+            cursor = closingAt + 5;   // past </tr>
+        } else {
+            // Malformed — emit as-is
+            out.push(fullOpenTag);
+            cursor = contentStart;
+        }
+    }
+
+    return out.join('');
+}
+
+// Scan forward from `from` and return the index of the first <tr> element
+// that has a data-ftl-optional attribute; returns -1 if none found.
+function findNextOptionalTr(html, from) {
+    let pos = from;
+    while (pos < html.length) {
+        const idx = html.indexOf('<tr', pos);
+        if (idx === -1) return -1;
+        const end = html.indexOf('>', idx);
+        if (end === -1) return -1;
+        if (/\bdata-ftl-optional="/.test(html.slice(idx, end + 1))) return idx;
+        pos = end + 1;
+    }
+    return -1;
 }
 
 // ─── Mode Switching (Design / HTML / Preview) ────────────────────────
@@ -1124,6 +1237,9 @@ function setupCanvasDragDrop() {
 
             // Clear drag state if user releases outside the iframe
             canvasDoc.addEventListener('dragend', () => { draggingParam = null; });
+
+            // Inject visual helper styles (optional-row indicator, etc.)
+            injectCanvasHelperStyles();
         } catch (err) {
             console.warn('[FTL] Canvas drop setup deferred:', err.message);
         }
@@ -1133,40 +1249,134 @@ function setupCanvasDragDrop() {
     setTimeout(attach, 800);   // belt-and-suspenders for fast GrapesJS loads
 }
 
-// Insert an FTL variable span into whichever canvas component is under the cursor.
+// ─── Context-Aware Param Insertion ───────────────────────────────────
+//
+// Design area  → displays as {paramName}  (clean JSON-style placeholder)
+//                 FTL export converts → ${paramName}
+//
+// Table cell   → displays as ${paramName} (FTL syntax, immediately usable)
+//                 A modal asks whether the row is optional or mandatory.
+//                 Optional: wraps the parent <tr> with <#if paramName??>…</#if>
+//                           so the entire row is hidden when the value is empty.
+//
 function insertParamAtCanvasPoint(cx, cy, paramName) {
-    const varHtml = `<span data-ftl-var="1" style="background:#fff3cd;border-radius:3px;padding:0 3px;`
-        + `font-family:monospace;font-size:0.9em;color:#856404">\${${paramName}}</span>`;
+    const comp = hoveredComponent;
 
-    // hoveredComponent is tracked via gje.on('component:hover') and will almost
-    // always be populated when the user drops over the canvas.
-    let comp = hoveredComponent;
+    if (!comp) {
+        // Nothing hovered — add a JSON placeholder to the canvas root
+        const ph = buildJsonPlaceholder(paramName);
+        try { gje.addComponents(ph); showToast(`{${paramName}} added to canvas`, 'success'); }
+        catch(e) { showToast('Hover over an element, then drop the parameter', 'info'); }
+        return;
+    }
 
-    if (comp) {
-        try {
-            comp.append(varHtml);
-            showToast(`\${${paramName}} inserted into element`, 'success');
-            return;
-        } catch (e) {
-            // Component might not accept children — try its parent
-            const parent = comp.parent && comp.parent();
-            if (parent) {
-                try {
-                    parent.append(varHtml);
-                    showToast(`\${${paramName}} inserted`, 'success');
-                    return;
-                } catch (e2) { /* fall through */ }
-            }
+    if (isComponentInTableCell(comp)) {
+        // TABLE CELL: ask optional / mandatory, then insert ${paramName}
+        pendingParamInsert = { paramName, comp };
+        document.getElementById('param-insert-name').textContent = `\${${paramName}}`;
+        paramInsertModal.show();
+    } else {
+        // DESIGN AREA: insert {paramName} JSON-style placeholder
+        const ph = buildJsonPlaceholder(paramName);
+        if (appendToComponent(comp, ph)) {
+            showToast(`{${paramName}} placeholder inserted`, 'success');
         }
     }
+}
 
-    // Last-resort: append to the canvas root wrapper
-    try {
-        gje.addComponents(varHtml);
-        showToast(`\${${paramName}} added to canvas`, 'success');
-    } catch (err) {
-        showToast(`Could not insert — hover over a content element first`, 'info');
+// Called by the "Mandatory" / "Optional" buttons in the paramInsertModal
+function confirmParamInsert(type) {
+    if (!pendingParamInsert) return;
+    const { paramName, comp } = pendingParamInsert;
+    pendingParamInsert = null;
+    paramInsertModal.hide();
+
+    const varSpan = `<span data-ftl-var="${paramName}" style="background:#fff3cd;border-radius:3px;`
+        + `padding:0 3px;font-family:monospace;font-size:0.9em;color:#856404">\${${paramName}}</span>`;
+
+    // Insert the FTL span into the hovered td/th (or its nearest accepting ancestor)
+    appendToComponent(comp, varSpan);
+
+    if (type === 'optional') {
+        // Walk up to find the <tr> and mark it so FTL export wraps it with <#if>
+        const trComp = findAncestorByTag(comp, 'tr');
+        if (trComp) {
+            trComp.addAttributes({ 'data-ftl-optional': paramName });
+            injectCanvasHelperStyles(); // ensure visual indicator is active
+            showToast(`\${${paramName}} inserted — row hidden when empty`, 'success');
+        } else {
+            showToast(`\${${paramName}} inserted (no parent <tr> found to wrap)`, 'info');
+        }
+    } else {
+        showToast(`\${${paramName}} inserted (mandatory)`, 'success');
     }
+}
+
+// ─── Component tree helpers ───────────────────────────────────────────
+function isComponentInTableCell(comp) {
+    let c = comp;
+    while (c) {
+        const tag = (c.get('tagName') || '').toLowerCase();
+        if (tag === 'td' || tag === 'th') return true;
+        if (tag === 'table' || !c.parent) return false;
+        c = c.parent();
+    }
+    return false;
+}
+
+function findAncestorByTag(comp, tagName) {
+    let c = comp;
+    while (c) {
+        if ((c.get('tagName') || '').toLowerCase() === tagName) return c;
+        if (!c.parent) return null;
+        c = c.parent();
+    }
+    return null;
+}
+
+// Append HTML to comp; falls back to parent, then canvas root
+function appendToComponent(comp, html) {
+    try { comp.append(html); return true; } catch(e) {}
+    try { comp.parent && comp.parent().append(html); return true; } catch(e) {}
+    try { gje.addComponents(html); return true; } catch(e) {}
+    showToast('Could not insert — try dropping on a different element', 'info');
+    return false;
+}
+
+// Build a blue dashed design-area JSON placeholder
+function buildJsonPlaceholder(paramName) {
+    return `<span data-json-ph="${paramName}" style="background:#e3f2fd;border:1px dashed #90caf9;`
+        + `border-radius:3px;padding:0 4px;font-family:monospace;font-size:0.9em;`
+        + `color:#1565c0;cursor:default">{${paramName}}</span>`;
+}
+
+// Inject visual styles for optional-row indicators into the canvas iframe.
+// Called once after the canvas is ready; idempotent (checks for existing tag).
+function injectCanvasHelperStyles() {
+    try {
+        const canvasDoc = gje.Canvas.getDocument();
+        if (!canvasDoc || canvasDoc.getElementById('__ftl-helpers__')) return;
+        const style = canvasDoc.createElement('style');
+        style.id = '__ftl-helpers__';
+        style.textContent = `
+            /* Optional-row visual indicator */
+            tr[data-ftl-optional] { background-color: rgba(255,193,7,0.1) !important; }
+            tr[data-ftl-optional] > td:first-child::before,
+            tr[data-ftl-optional] > th:first-child::before {
+                content: '❓ ';
+                font-size: 10px;
+                opacity: 0.65;
+            }
+            /* JSON design placeholder hover hint */
+            span[data-json-ph]:hover::after {
+                content: ' → FTL on export';
+                font-size: 9px;
+                color: #1565c0;
+                opacity: 0.7;
+            }
+        `;
+        (canvasDoc.head || canvasDoc.documentElement).appendChild(style);
+    } catch(err) { /* canvas not ready yet */ }
 }
 
 // ─── Responsive CSS Injection ─────────────────────────────────────────

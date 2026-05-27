@@ -385,6 +385,35 @@
   </div>
 </div>
 
+<!-- Param Insert: Optional / Mandatory Modal -->
+<div class="modal fade" id="paramInsertModal" tabindex="-1">
+  <div class="modal-dialog modal-sm">
+    <div class="modal-content bg-dark text-white border-secondary">
+      <div class="modal-header py-2 border-secondary">
+        <h6 class="modal-title mb-0"><i class="bi bi-table me-2 text-warning"></i>Table Column Drop</h6>
+        <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal"></button>
+      </div>
+      <div class="modal-body py-3">
+        <p class="small mb-1">Inserting <code id="param-insert-name" class="text-warning"></code> into table cell.</p>
+        <hr class="border-secondary my-2">
+        <p class="small fw-semibold mb-1 text-light">Is this value optional?</p>
+        <p class="text-muted small mb-0">
+          If <strong>Optional</strong> and the value is empty at runtime,
+          the entire row will be hidden with <code class="text-info">&lt;#if param??&gt;</code>.
+        </p>
+      </div>
+      <div class="modal-footer py-2 border-secondary gap-2 flex-nowrap">
+        <button class="btn btn-outline-secondary btn-sm" onclick="confirmParamInsert('mandatory')">
+          <i class="bi bi-asterisk me-1 text-danger"></i>Mandatory
+        </button>
+        <button class="btn btn-warning btn-sm text-dark" onclick="confirmParamInsert('optional')">
+          <i class="bi bi-eye-slash me-1"></i>Optional — hide row if empty
+        </button>
+      </div>
+    </div>
+  </div>
+</div>
+
 <!-- Toast -->
 <div class="toast-container position-fixed bottom-0 end-0 p-3" style="z-index:9999;">
   <div id="main-toast" class="toast" role="alert" aria-atomic="true">

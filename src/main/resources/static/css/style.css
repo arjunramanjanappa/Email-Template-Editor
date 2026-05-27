@@ -379,6 +379,9 @@ body.bg-light { overflow: auto; }
 .canvas-wrapper.device-email600 { background: #d8d2c8 !important; }
 .canvas-wrapper.device-desktop  { background: #e5e5e5 !important; }
 
+/* ─── Param Insert modal: dark theme hints ───────────────── */
+#paramInsertModal code { font-size: 0.78rem; }
+
 /* ─── Scrollbar global ──────────────────────────────────── */
 ::-webkit-scrollbar { width: 5px; height: 5px; }
 ::-webkit-scrollbar-track { background: transparent; }
