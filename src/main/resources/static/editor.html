@@ -113,12 +113,20 @@
       <!-- HTML source mode -->
       <div id="html-mode-view" class="source-view d-none">
         <div class="source-toolbar">
-          <span class="text-muted small"><i class="bi bi-code-slash me-1"></i>Generated HTML (read-only — switch to Design to edit)</span>
-          <button class="btn btn-xs btn-outline-secondary btn-sm py-0 px-2" onclick="copyHtmlSource()">
-            <i class="bi bi-clipboard"></i> Copy
-          </button>
+          <span class="small text-muted">
+            <i class="bi bi-code-slash me-1"></i>HTML Source — editable
+            <span id="html-dirty-badge" class="badge bg-warning text-dark ms-2 d-none">Modified</span>
+          </span>
+          <div class="d-flex gap-2 align-items-center">
+            <button id="apply-html-btn" class="btn btn-success btn-sm py-0 px-2 d-none" onclick="applyHtmlToDesign()">
+              <i class="bi bi-check2-circle me-1"></i>Apply to Design
+            </button>
+            <button class="btn btn-outline-secondary btn-sm py-0 px-2" onclick="copyHtmlSource()">
+              <i class="bi bi-clipboard"></i> Copy
+            </button>
+          </div>
         </div>
-        <textarea id="html-source-area" class="source-textarea" readonly></textarea>
+        <textarea id="html-source-area" class="source-textarea" oninput="onHtmlSourceChange()" spellcheck="false"></textarea>
       </div>
 
       <!-- Preview mode (no param substitution — design preview only) -->
@@ -166,7 +174,7 @@
           </button>
         </div>
         <div class="params-info-strip">
-          <small>Click <b>Insert</b> → copies <code>${param}</code> to clipboard → paste in editor</small>
+          <small><i class="bi bi-grip-horizontal me-1"></i><b>Drag</b> param onto canvas, or click <b>Insert</b> → copies <code>${param}</code> to clipboard</small>
         </div>
         <div id="params-list" class="params-list-inner"></div>
         <div class="params-json-row">

@@ -359,6 +359,26 @@ body.bg-light { overflow: auto; }
 #block-search-wrap input::placeholder { color: #666; }
 #block-search-wrap input:focus { box-shadow: none; border-color: #0d6efd !important; }
 
+/* ─── Editable HTML source ──────────────────────────────── */
+.source-textarea { cursor: text; caret-color: #a8d0a8; }
+
+/* ─── Param drag-drop ───────────────────────────────────── */
+.param-item[draggable="true"] { cursor: grab; user-select: none; }
+.param-item[draggable="true"]:active { cursor: grabbing; opacity: 0.75; }
+.param-item[draggable="true"]:hover { border-color: #0d6efd; }
+.param-drag-hint {
+  font-size: 0.65rem;
+  color: #555;
+  margin-top: 4px;
+  display: flex;
+  align-items: center;
+}
+
+/* ─── Canvas device frames ──────────────────────────────── */
+.canvas-wrapper.device-mobile   { background: #1a1a2e !important; }
+.canvas-wrapper.device-email600 { background: #d8d2c8 !important; }
+.canvas-wrapper.device-desktop  { background: #e5e5e5 !important; }
+
 /* ─── Scrollbar global ──────────────────────────────────── */
 ::-webkit-scrollbar { width: 5px; height: 5px; }
 ::-webkit-scrollbar-track { background: transparent; }
