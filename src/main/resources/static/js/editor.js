@@ -318,12 +318,15 @@ function getFullHtml() {
 //
 // Transforms the raw GrapesJS HTML body into export-ready FTL:
 //
-//  1. JSON design placeholders  <span data-json-ph="X">{X}</span>
-//     → ${X}  (FTL variable expression)
+//  1. Legacy back-compat: <span data-json-ph="X">{X}</span>
+//     → ${X}  (templates saved before v2.2 used this placeholder style)
 //
 //  2. Optional table rows  <tr data-ftl-optional="X">…</tr>
 //     → <#if X??>\n<tr>…</tr>\n</#if>
-//     so that FreeMarker hides the row when X is null/missing.
+//     so that FreeMarker hides the row when X is null/missing at runtime.
+//
+// NOTE: The param label is for UI display only and is NEVER written into
+//       the template output — only the variable name (${X}) is used.
 //
 function convertBodyToFtl(rawHtml) {
     // --- Step 1: replace JSON placeholder spans with FTL expressions ---
@@ -1193,13 +1196,15 @@ function syncParamsToBlocks() {
     const toRemove = [];
     bm.getAll().each(b => { if (b.id && b.id.startsWith('param-block-')) toRemove.push(b.id); });
     toRemove.forEach(id => bm.remove(id));
-    // Re-add fresh blocks for each current parameter
+    // Re-add fresh blocks for each current parameter.
+    // Block label = display name for the Blocks panel UI only.
+    // Block content = the FTL span that gets inserted — variable name only, no label.
     parameters.forEach(p => {
         bm.add(`param-block-${p.name}`, {
             label: `<span style="font-family:monospace;font-size:10px;display:block;margin-bottom:3px">\${${p.name}}</span>${escapeHtml(p.label || p.name)}`,
             category: '🔧 Parameters',
-            content: `<span data-ftl-var="1" style="background:#fff3cd;border-radius:3px;padding:0 3px;font-family:monospace;font-size:0.9em;color:#856404">\${${p.name}}</span>`,
-            attributes: { title: `Insert \${${p.name}} variable` }
+            content: buildFtlSpan(p.name),
+            attributes: { title: `Insert \${${p.name}}` }
         });
     });
 }
@@ -1251,35 +1256,35 @@ function setupCanvasDragDrop() {
 
 // ─── Context-Aware Param Insertion ───────────────────────────────────
 //
-// Design area  → displays as {paramName}  (clean JSON-style placeholder)
-//                 FTL export converts → ${paramName}
+// The param LABEL is for display in the Params panel only — it is NEVER
+// inserted into the canvas.  Only the variable name is used.
 //
-// Table cell   → displays as ${paramName} (FTL syntax, immediately usable)
-//                 A modal asks whether the row is optional or mandatory.
-//                 Optional: wraps the parent <tr> with <#if paramName??>…</#if>
-//                           so the entire row is hidden when the value is empty.
+// Anywhere in design  → inserts ${paramName}  (FTL syntax)
+//
+// Table cell only     → same ${paramName}, but first asks optional/mandatory.
+//                       Optional: marks parent <tr data-ftl-optional="X">
+//                       so FTL export wraps the row with <#if X??>…</#if>,
+//                       hiding it when the value is empty at runtime.
 //
 function insertParamAtCanvasPoint(cx, cy, paramName) {
     const comp = hoveredComponent;
 
     if (!comp) {
-        // Nothing hovered — add a JSON placeholder to the canvas root
-        const ph = buildJsonPlaceholder(paramName);
-        try { gje.addComponents(ph); showToast(`{${paramName}} added to canvas`, 'success'); }
+        // Nothing hovered — append FTL span to the canvas root
+        try { gje.addComponents(buildFtlSpan(paramName)); showToast(`\${${paramName}} added to canvas`, 'success'); }
         catch(e) { showToast('Hover over an element, then drop the parameter', 'info'); }
         return;
     }
 
     if (isComponentInTableCell(comp)) {
-        // TABLE CELL: ask optional / mandatory, then insert ${paramName}
+        // TABLE CELL: show optional / mandatory modal before inserting
         pendingParamInsert = { paramName, comp };
         document.getElementById('param-insert-name').textContent = `\${${paramName}}`;
         paramInsertModal.show();
     } else {
-        // DESIGN AREA: insert {paramName} JSON-style placeholder
-        const ph = buildJsonPlaceholder(paramName);
-        if (appendToComponent(comp, ph)) {
-            showToast(`{${paramName}} placeholder inserted`, 'success');
+        // ANY OTHER DESIGN ELEMENT: insert ${paramName} directly (no modal)
+        if (appendToComponent(comp, buildFtlSpan(paramName))) {
+            showToast(`\${${paramName}} inserted`, 'success');
         }
     }
 }
@@ -1291,11 +1296,8 @@ function confirmParamInsert(type) {
     pendingParamInsert = null;
     paramInsertModal.hide();
 
-    const varSpan = `<span data-ftl-var="${paramName}" style="background:#fff3cd;border-radius:3px;`
-        + `padding:0 3px;font-family:monospace;font-size:0.9em;color:#856404">\${${paramName}}</span>`;
-
-    // Insert the FTL span into the hovered td/th (or its nearest accepting ancestor)
-    appendToComponent(comp, varSpan);
+    // Insert the FTL span (label is display-only — only variable name used)
+    appendToComponent(comp, buildFtlSpan(paramName));
 
     if (type === 'optional') {
         // Walk up to find the <tr> and mark it so FTL export wraps it with <#if>
@@ -1343,11 +1345,11 @@ function appendToComponent(comp, html) {
     return false;
 }
 
-// Build a blue dashed design-area JSON placeholder
-function buildJsonPlaceholder(paramName) {
-    return `<span data-json-ph="${paramName}" style="background:#e3f2fd;border:1px dashed #90caf9;`
-        + `border-radius:3px;padding:0 4px;font-family:monospace;font-size:0.9em;`
-        + `color:#1565c0;cursor:default">{${paramName}}</span>`;
+// Build a styled FTL variable span — used for ALL drag-drop insertions.
+// The param label is intentionally ignored here; only the variable name matters.
+function buildFtlSpan(paramName) {
+    return `<span data-ftl-var="${paramName}" style="background:#fff3cd;border-radius:3px;`
+        + `padding:0 3px;font-family:monospace;font-size:0.9em;color:#856404">\${${paramName}}</span>`;
 }
 
 // Inject visual styles for optional-row indicators into the canvas iframe.
