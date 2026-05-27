@@ -11,6 +11,9 @@ let editingParamIndex = -1;
 let jsonModeActive = false;
 let currentMode = 'design';   // design | html | preview
 let isFullscreen = false;
+let htmlSourceDirty = false;   // true when user edits HTML source textarea
+let draggingParam = null;      // param name currently being dragged from params panel
+let hoveredComponent = null;   // last GrapesJS component hovered over in canvas
 
 // Bootstrap modal references
 let addParamModal, importJsonModal, importHtmlModal, previewModal, findReplaceModal;
@@ -81,6 +84,10 @@ function initGrapesJS() {
 
     setupRTE(gje);
     setupPasteHandler(gje);
+    setupCanvasDragDrop();
+
+    // Track the component currently under the mouse — used by param drag-drop
+    gje.on('component:hover', (comp) => { hoveredComponent = comp || null; });
 
     // Sync layers / traits on selection
     gje.on('component:selected', () => {
@@ -306,6 +313,17 @@ function getFullHtml() {
 
 // ─── Mode Switching (Design / HTML / Preview) ────────────────────────
 function setMode(mode) {
+    // If leaving HTML view with unsaved edits, ask the user
+    if (currentMode === 'html' && mode !== 'html' && htmlSourceDirty) {
+        const apply = confirm('You have unsaved HTML edits. Apply them to the design canvas?');
+        if (!apply) return;   // user cancels — stay in HTML mode
+        const html = document.getElementById('html-source-area').value.trim();
+        if (html) setEditorContent(html);
+        htmlSourceDirty = false;
+        document.getElementById('html-dirty-badge').classList.add('d-none');
+        document.getElementById('apply-html-btn').classList.add('d-none');
+    }
+
     currentMode = mode;
     const gjsWrap   = document.getElementById('gjs-wrapper');
     const htmlView  = document.getElementById('html-mode-view');
@@ -324,12 +342,48 @@ function setMode(mode) {
         gjsWrap.classList.remove('d-none');
     } else if (mode === 'html') {
         htmlView.classList.remove('d-none');
-        const html = getFullHtml();
-        document.getElementById('html-source-area').value = html;
+        // Only refresh content when there are no pending edits (preserve user's work)
+        if (!htmlSourceDirty) {
+            document.getElementById('html-source-area').value = getFullHtml();
+        }
     } else if (mode === 'preview') {
         prevView.classList.remove('d-none');
         document.getElementById('canvas-preview-frame').srcdoc = gje.getHtml();
     }
+}
+
+// ─── HTML Source Editing ─────────────────────────────────────────────
+function onHtmlSourceChange() {
+    htmlSourceDirty = true;
+    document.getElementById('html-dirty-badge').classList.remove('d-none');
+    document.getElementById('apply-html-btn').classList.remove('d-none');
+}
+
+function applyHtmlToDesign() {
+    const html = document.getElementById('html-source-area').value.trim();
+    if (!html) { showToast('HTML source is empty', 'info'); return; }
+
+    setEditorContent(html);
+    htmlSourceDirty = false;
+    document.getElementById('html-dirty-badge').classList.add('d-none');
+    document.getElementById('apply-html-btn').classList.add('d-none');
+
+    // Auto-detect any new ${param} variables introduced in the edited HTML
+    const detected = [...html.matchAll(/\$\{([a-zA-Z_][a-zA-Z0-9_.?!]*)\}/g)]
+        .map(m => m[1].split('.')[0].replace(/[?!]/g, ''))
+        .filter((v, i, a) => a.indexOf(v) === i)
+        .filter(name => !parameters.find(p => p.name === name));
+    if (detected.length) {
+        detected.forEach(name => parameters.push({
+            name, label: camelToLabel(name), type: 'STRING', defaultValue: '', required: false
+        }));
+        renderParametersList();
+        showToast(`Applied! ${detected.length} new param(s) auto-detected. Switching to Design.`, 'success');
+    } else {
+        showToast('HTML applied to design canvas', 'success');
+    }
+
+    setMode('design');
 }
 
 function setCanvasPreviewWidth(w, btn) {
@@ -344,6 +398,16 @@ function switchDevice(btn) {
     gje.setDevice(device);
     document.querySelectorAll('.device-btn').forEach(b => b.classList.remove('active'));
     btn.classList.add('active');
+
+    // Inject responsive CSS into the canvas iframe for visual simulation
+    applyResponsiveCSS(device);
+
+    // Update canvas wrapper class for device frame background
+    const cw = document.getElementById('canvas-wrapper');
+    cw.classList.remove('device-desktop', 'device-email600', 'device-mobile');
+    if (device === 'Mobile')      cw.classList.add('device-mobile');
+    else if (device === 'Email 600') cw.classList.add('device-email600');
+    else                          cw.classList.add('device-desktop');
 }
 
 // ─── GrapesJS Command Proxy ──────────────────────────────────────────
@@ -617,10 +681,13 @@ function renderParametersList() {
     const list = document.getElementById('params-list');
     if (!parameters.length) {
         list.innerHTML = `<div class="params-empty"><i class="bi bi-braces"></i>No parameters.<br><small>Click + Add to define FTL variables.</small></div>`;
+        syncParamsToBlocks();
         return;
     }
     list.innerHTML = parameters.map((p, i) => `
-    <div class="param-item">
+    <div class="param-item" draggable="true"
+         ondragstart="onParamDragStart(event,'${p.name}')"
+         ondragend="draggingParam=null">
       <div class="param-item-header">
         <span class="param-varname">\${${p.name}}</span>
         <div class="d-flex gap-1">
@@ -630,6 +697,7 @@ function renderParametersList() {
       </div>
       ${p.label ? `<div class="param-lbl">${escapeHtml(p.label)}</div>` : ''}
       ${p.defaultValue ? `<div class="param-lbl" style="color:#555">Default: <code style="color:#7fb3d3">${escapeHtml(p.defaultValue)}</code></div>` : ''}
+      <div class="param-drag-hint"><i class="bi bi-grip-horizontal me-1"></i>Drag to canvas or use Insert</div>
       <div class="param-actions">
         <button class="param-insert-btn" onclick="insertParameter(${i})" title="Copy \${${p.name}} to clipboard">
           <i class="bi bi-clipboard"></i> Insert
@@ -638,6 +706,7 @@ function renderParametersList() {
         <button class="param-del-btn"  onclick="deleteParameter(${i})"   title="Remove"><i class="bi bi-trash"></i></button>
       </div>
     </div>`).join('');
+    syncParamsToBlocks();
 }
 
 // ─── Import / Export JSON Params ─────────────────────────────────────
@@ -999,6 +1068,157 @@ function getAllBlocks() {
             content: `<#-- FTL Comment: this will not appear in output -->`
         }
     ];
+}
+
+// ─── Param → Blocks Sync ─────────────────────────────────────────────
+// Keeps a "🔧 Parameters" category in the Blocks panel in sync with the
+// current parameters array so users can drag params from the Blocks panel too.
+function syncParamsToBlocks() {
+    if (!gje) return;
+    const bm = gje.BlockManager;
+    // Collect stale param block IDs then remove them
+    const toRemove = [];
+    bm.getAll().each(b => { if (b.id && b.id.startsWith('param-block-')) toRemove.push(b.id); });
+    toRemove.forEach(id => bm.remove(id));
+    // Re-add fresh blocks for each current parameter
+    parameters.forEach(p => {
+        bm.add(`param-block-${p.name}`, {
+            label: `<span style="font-family:monospace;font-size:10px;display:block;margin-bottom:3px">\${${p.name}}</span>${escapeHtml(p.label || p.name)}`,
+            category: '🔧 Parameters',
+            content: `<span data-ftl-var="1" style="background:#fff3cd;border-radius:3px;padding:0 3px;font-family:monospace;font-size:0.9em;color:#856404">\${${p.name}}</span>`,
+            attributes: { title: `Insert \${${p.name}} variable` }
+        });
+    });
+}
+
+// ─── Parameter Drag-Drop into Canvas ─────────────────────────────────
+function onParamDragStart(e, paramName) {
+    draggingParam = paramName;
+    e.dataTransfer.setData('text/plain', paramName);
+    e.dataTransfer.effectAllowed = 'copy';
+}
+
+// Attach dragover/drop to the GrapesJS canvas iframe document.
+// Called once GrapesJS finishes loading; retried via timeout as fallback.
+function setupCanvasDragDrop() {
+    const attach = () => {
+        try {
+            const canvasDoc = gje.Canvas.getDocument();
+            if (!canvasDoc || canvasDoc.__ftlDropReady) return;
+            canvasDoc.__ftlDropReady = true;
+
+            canvasDoc.addEventListener('dragover', (e) => {
+                if (draggingParam) {
+                    e.preventDefault();
+                    e.dataTransfer.dropEffect = 'copy';
+                }
+            });
+
+            canvasDoc.addEventListener('drop', (e) => {
+                if (!draggingParam) return;
+                e.preventDefault();
+                const pName = draggingParam;
+                draggingParam = null;
+                insertParamAtCanvasPoint(e.clientX, e.clientY, pName);
+            });
+
+            // Clear drag state if user releases outside the iframe
+            canvasDoc.addEventListener('dragend', () => { draggingParam = null; });
+        } catch (err) {
+            console.warn('[FTL] Canvas drop setup deferred:', err.message);
+        }
+    };
+    gje.on('load',               attach);
+    gje.on('canvas:frame:load',  attach);
+    setTimeout(attach, 800);   // belt-and-suspenders for fast GrapesJS loads
+}
+
+// Insert an FTL variable span into whichever canvas component is under the cursor.
+function insertParamAtCanvasPoint(cx, cy, paramName) {
+    const varHtml = `<span data-ftl-var="1" style="background:#fff3cd;border-radius:3px;padding:0 3px;`
+        + `font-family:monospace;font-size:0.9em;color:#856404">\${${paramName}}</span>`;
+
+    // hoveredComponent is tracked via gje.on('component:hover') and will almost
+    // always be populated when the user drops over the canvas.
+    let comp = hoveredComponent;
+
+    if (comp) {
+        try {
+            comp.append(varHtml);
+            showToast(`\${${paramName}} inserted into element`, 'success');
+            return;
+        } catch (e) {
+            // Component might not accept children — try its parent
+            const parent = comp.parent && comp.parent();
+            if (parent) {
+                try {
+                    parent.append(varHtml);
+                    showToast(`\${${paramName}} inserted`, 'success');
+                    return;
+                } catch (e2) { /* fall through */ }
+            }
+        }
+    }
+
+    // Last-resort: append to the canvas root wrapper
+    try {
+        gje.addComponents(varHtml);
+        showToast(`\${${paramName}} added to canvas`, 'success');
+    } catch (err) {
+        showToast(`Could not insert — hover over a content element first`, 'info');
+    }
+}
+
+// ─── Responsive CSS Injection ─────────────────────────────────────────
+// Injects (or removes) a <style> tag directly in the GrapesJS canvas iframe
+// to simulate how the email looks on each device. These styles are NOT saved
+// to the template HTML — they're view-only previews.
+function applyResponsiveCSS(deviceName) {
+    try {
+        const canvasDoc = gje.Canvas.getDocument();
+        if (!canvasDoc) return;
+
+        // Remove any previously injected responsive override
+        const prev = canvasDoc.getElementById('__ftl-responsive__');
+        if (prev) prev.remove();
+
+        let css = '';
+
+        if (deviceName === 'Mobile') {
+            css = `
+                /* ── Mobile simulation ── */
+                table, tr, td { display:block !important; width:100% !important;
+                    box-sizing:border-box !important; }
+                img { max-width:100% !important; height:auto !important; display:block !important; }
+                h1 { font-size:22px !important; }
+                h2 { font-size:18px !important; }
+                p, td, li, span { font-size:14px !important; line-height:1.6 !important; }
+                a[style*="display:inline-block"] {
+                    display:block !important;
+                    width:calc(100% - 32px) !important;
+                    box-sizing:border-box !important;
+                    text-align:center !important;
+                }
+                [style*="width:600"] { width:100% !important; }
+            `;
+        } else if (deviceName === 'Email 600') {
+            css = `
+                /* ── Email-client simulation ── */
+                body { background:#e0dcd6 !important; }
+                img { max-width:100% !important; height:auto !important; }
+            `;
+        }
+        // Desktop: no overrides — pure canvas, injected styles already removed above
+
+        if (css) {
+            const style = canvasDoc.createElement('style');
+            style.id = '__ftl-responsive__';
+            style.textContent = css;
+            (canvasDoc.head || canvasDoc.documentElement).appendChild(style);
+        }
+    } catch (err) {
+        // Canvas not ready (e.g., during init) — silently ignore
+    }
 }
 
 // ─── Utility ──────────────────────────────────────────────────────────
